@@ -1,0 +1,245 @@
+let scene, camera, renderer, particleSystem;
+let targetPositions = [];
+const PARTICLE_COUNT = 18000;
+let sphereMode = "none"; 
+let heartMode = false;
+let explosionMode = false;
+let currentTextIndex = -1;
+let currentTextColor = new THREE.Color(1, 1, 1); 
+
+let sphereTargets = new Float32Array(PARTICLE_COUNT * 3);
+let heartTargets = new Float32Array(PARTICLE_COUNT * 3);
+
+const vHandL = new THREE.Vector3(0,0,0);
+const vHandR = new THREE.Vector3(0,0,0);
+const messages = ["HOLA", "BIENVENIDOS", "GRACIAS", "POR SU APOYO"];
+
+function initThree() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 9;
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.autoClearColor = false; 
+    document.body.appendChild(renderer.domElement);
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const colors = new Float32Array(PARTICLE_COUNT * 3);
+    const initialPos = new Float32Array(PARTICLE_COUNT * 3);
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        positions[i*3] = initialPos[i*3] = (Math.random() - 0.5) * 25;
+        positions[i*3+1] = initialPos[i*3+1] = (Math.random() - 0.5) * 20;
+        positions[i*3+2] = initialPos[i*3+2] = (Math.random() - 0.5) * 10;
+        colors[i*3] = 0.1; colors[i*3+1] = 0.5; colors[i*3+2] = 1.0;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('initialPos', new THREE.BufferAttribute(initialPos, 3));
+
+    const material = new THREE.ShaderMaterial({
+        vertexShader: document.getElementById('vertexShader').textContent,
+        fragmentShader: document.getElementById('fragmentShader').textContent,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+
+    particleSystem = new THREE.Points(geometry, material);
+    scene.add(particleSystem);
+    createShapes();
+}
+
+function createShapes() {
+    const radius = 2.8;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const phi = Math.acos(-1 + (2 * i) / PARTICLE_COUNT);
+        const theta = Math.sqrt(PARTICLE_COUNT * Math.PI) * phi;
+        sphereTargets[i*3] = radius * Math.cos(theta) * Math.sin(phi);
+        sphereTargets[i*3+1] = radius * Math.sin(theta) * Math.sin(phi);
+        sphereTargets[i*3+2] = radius * Math.cos(phi);
+
+        const t = Math.random() * Math.PI * 2;
+        const r = 0.18; 
+        heartTargets[i*3] = r * (16 * Math.pow(Math.sin(t), 3));
+        heartTargets[i*3+1] = r * (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
+        heartTargets[i*3+2] = (Math.random() - 0.5) * 1.0; 
+    }
+}
+
+function countFingers(landmarks, label) {
+    let count = 0;
+    const tips = [4, 8, 12, 16, 20];
+    if (label === "Right") { if (landmarks[4].x < landmarks[3].x) count++; }
+    else { if (landmarks[4].x > landmarks[3].x) count++; }
+    for (let i = 1; i < 5; i++) { if (landmarks[tips[i]].y < landmarks[tips[i]-2].y) count++; }
+    return count;
+}
+
+function generateRandomNeonColor() {
+    const hue = Math.random();
+    return new THREE.Color().setHSL(hue, 1.0, 0.6);
+}
+
+function createTextTarget(text) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 2048; 
+    canvas.height = 512;
+    currentTextColor = generateRandomNeonColor();
+
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 150px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 1024, 256); 
+    
+    const data = ctx.getImageData(0, 0, 2048, 512).data;
+    const pts = [];
+    for (let y = 0; y < 512; y += 4) {
+        for (let x = 0; x < 2048; x += 4) {
+            if (data[(y * 2048 + x) * 4 + 3] > 128) {
+                pts.push({ x: (x - 1024) * 0.012, y: -(y - 256) * 0.012 });
+            }
+        }
+    }
+    targetPositions = [];
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const p = pts[i % pts.length];
+        targetPositions.push(p.x, p.y, (Math.random()-0.5)*0.5);
+    }
+}
+
+function onResults(results) {
+    let fL = -1, fR = -1;
+    if (results.multiHandLandmarks) {
+        results.multiHandLandmarks.forEach((landmarks, index) => {
+            const label = results.multiHandedness[index].label;
+            const fingers = countFingers(landmarks, label);
+            if (label === "Left") {
+                fL = fingers;
+                vHandL.set(-(landmarks[9].x-0.5)*20, -(landmarks[9].y-0.5)*16, -landmarks[9].z*10);
+            } else {
+                fR = fingers;
+                vHandR.set(-(landmarks[9].x-0.5)*20, -(landmarks[9].y-0.5)*16, -landmarks[9].z*10);
+            }
+        });
+
+        const status = document.getElementById('gesture-status');
+        
+        if (fL === 0 && fR === 0) {
+            heartMode = true; sphereMode = "none"; explosionMode = false;
+            status.innerText = "❤️ LATIDO ACTIVO ❤️";
+            status.style.color = "#ff3366";
+        } else if (fL === 0 && fR === 5) {
+            sphereMode = "right"; heartMode = false;
+        } else if (fL === 5 && fR === 0) {
+            sphereMode = "left"; heartMode = false;
+        } else if (fL === 5 && fR === 5) {
+            explosionMode = true; sphereMode = "none"; heartMode = false;
+        } else {
+            sphereMode = "none"; heartMode = false; explosionMode = false;
+            let maxF = Math.max(fL, fR);
+            if (maxF >= 1 && maxF <= 5) {
+                if (currentTextIndex !== maxF - 1) {
+                    currentTextIndex = maxF - 1;
+                    createTextTarget(messages[currentTextIndex]);
+                }
+                status.innerText = `MENSAJE: ${messages[currentTextIndex]}`;
+                status.style.color = "#ffffff";
+            } else {
+                targetPositions = []; currentTextIndex = -1;
+                status.innerText = "SISTEMA ONLINE";
+                status.style.color = "#00ff00";
+            }
+        }
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    renderer.setClearColor(0x000000, 0.15); 
+    renderer.clear(true, true, true);
+
+    const pos = particleSystem.geometry.attributes.position.array;
+    const col = particleSystem.geometry.attributes.color.array;
+    const init = particleSystem.geometry.attributes.initialPos.array;
+    
+    const time = Date.now();
+    const heartPulse = 1.0 + Math.pow(Math.sin(time * 0.005), 2.0) * 0.35;
+    const rotationSpeed = time * 0.003; 
+    const sinR = Math.sin(rotationSpeed);
+    const cosR = Math.cos(rotationSpeed);
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3 = i * 3;
+        let jitter = (sphereMode !== "none" || heartMode || explosionMode) ? 0.20 : 0.02;
+        let vx = (Math.random() - 0.5) * jitter;
+        let vy = (Math.random() - 0.5) * jitter;
+
+        if (heartMode) {
+            let cx = (vHandL.x + vHandR.x) / 2;
+            let cy = (vHandL.y + vHandR.y) / 2;
+            let px = heartTargets[i3] * heartPulse;
+            let py = heartTargets[i3+1] * heartPulse;
+            pos[i3] += (px + cx - pos[i3]) * 0.15 + vx;
+            pos[i3+1] += (py + cy - pos[i3+1]) * 0.15 + vy;
+            pos[i3+2] += (heartTargets[i3+2] - pos[i3+2]) * 0.15;
+            col[i3]=1.0; col[i3+1]=0.1; col[i3+2]=0.3; 
+        }
+        else if (sphereMode !== "none") {
+            const targetHand = (sphereMode === "right") ? vHandR : vHandL;
+            let rx = sphereTargets[i3] * cosR - sphereTargets[i3+2] * sinR;
+            let rz = sphereTargets[i3] * sinR + sphereTargets[i3+2] * cosR;
+            pos[i3] += (rx + targetHand.x - pos[i3]) * 0.18 + vx;
+            pos[i3+1] += (sphereTargets[i3+1] + targetHand.y - pos[i3+1]) * 0.18 + vy;
+            pos[i3+2] += (rz + targetHand.z - pos[i3+2]) * 0.18;
+            col[i3]=0.0; col[i3+1]=1.0; col[i3+2]=0.8;
+        } 
+        else if (explosionMode) {
+            pos[i3] += (Math.random()-0.5)*3.0;
+            pos[i3+1] += (Math.random()-0.5)*3.0;
+            pos[i3+2] += (Math.random()-0.5)*3.0;
+            col[i3]=1.0; col[i3+1]=0.5; col[i3+2]=0.0;
+        }
+        else if (targetPositions.length > 0) {
+            pos[i3] += (targetPositions[i3] - pos[i3]) * 0.12 + vx;
+            pos[i3+1] += (targetPositions[i3+1] - pos[i3+1]) * 0.12 + vy;
+            pos[i3+2] += (targetPositions[i3+2] - pos[i3+2]) * 0.12;
+            col[i3] = currentTextColor.r;
+            col[i3+1] = currentTextColor.g;
+            col[i3+2] = currentTextColor.b;
+        } 
+        else {
+            pos[i3] += (init[i3] - pos[i3]) * 0.05 + vx;
+            pos[i3+1] += (init[i3+1] - pos[i3+1]) * 0.05 + vy;
+            pos[i3+2] += (init[i3+2] - pos[i3+2]) * 0.05;
+            col[i3]=0.1; col[i3+1]=0.4; col[i3+2]=1.0;
+        }
+    }
+    particleSystem.geometry.attributes.position.needsUpdate = true;
+    particleSystem.geometry.attributes.color.needsUpdate = true;
+    renderer.render(scene, camera);
+}
+
+// Configuración de MediaPipe Hands
+const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+hands.onResults(onResults);
+
+new Camera(document.getElementById('input_video'), {
+    onFrame: async () => { await hands.send({ image: document.getElementById('input_video') }); },
+    width: 1280, height: 720
+}).start();
+
+initThree();
+animate();
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
